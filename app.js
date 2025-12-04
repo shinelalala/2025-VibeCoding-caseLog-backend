@@ -15,7 +15,7 @@ const PORT = process.env.PORT || 3000;
 const SHEET_ID =
   process.env.GOOGLE_SHEET_ID || "1MeCb_ClcxP-H_e6vYid49l-ayRd0cF-TE_StXRO9dnM";
 const TRANSACTION_SHEET_RANGE =
-  process.env.GOOGLE_TRANSACTION_RANGE || "'transactions'!A:F";
+  process.env.GOOGLE_TRANSACTION_RANGE || "'2022'!A:H";
 const TRANSACTION_COLUMNS = [
   "id",
   "date",
@@ -45,21 +45,8 @@ const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || "!Nba1q2w3e4r";
 const JWT_SECRET = process.env.JWT_SECRET || "change-me-secret";
 const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN || "365d";
 const API_ENDPOINTS = [
-  { method: "POST", path: "/auth/login", description: "登入並取得 JWT" },
   { method: "GET", path: "/api/transactions", description: "取得所有記帳資料" },
-  { method: "POST", path: "/api/transactions", description: "新增記帳資料" },
-  { method: "PUT", path: "/api/transactions/:id", description: "更新記帳資料" },
-  {
-    method: "DELETE",
-    path: "/api/transactions/:id",
-    description: "刪除記帳資料",
-  },
-  { method: "GET", path: "/api/categories", description: "取得所有類別與色碼" },
-  { method: "POST", path: "/api/categories", description: "新增類別" },
-  { method: "PUT", path: "/api/categories/:id", description: "更新類別" },
-  { method: "DELETE", path: "/api/categories/:id", description: "刪除類別" },
-  { method: "GET", path: "/api/budget", description: "取得預算" },
-  { method: "PUT", path: "/api/budget", description: "更新預算" },
+  { method: "GET", path: "/api/transactions/:keyword", description: "查詢專案" }
 ];
 
 /**
@@ -240,143 +227,6 @@ const deleteRow = async (sheetName, rowIndex) => {
   });
 };
 
-const initializeCategorySheet = async (sheets) => {
-  await sheets.spreadsheets.values.update({
-    spreadsheetId: SHEET_ID,
-    range: CATEGORY_SHEET_RANGE,
-    valueInputOption: "RAW",
-    requestBody: {
-      values: [
-        CATEGORY_COLUMNS,
-        CATEGORY_COLUMNS.map((key) => DEFAULT_CATEGORY[key] || ""),
-      ],
-    },
-  });
-};
-
-const initializeBudgetSheet = async (sheets) => {
-  await sheets.spreadsheets.values.update({
-    spreadsheetId: SHEET_ID,
-    range: BUDGET_SHEET_RANGE,
-    valueInputOption: "RAW",
-    requestBody: {
-      values: [
-        BUDGET_COLUMNS,
-        BUDGET_COLUMNS.map((key) => DEFAULT_BUDGET[key] || ""),
-      ],
-    },
-  });
-};
-
-const normalizeCategoryId = (value) => (value ?? "").toString().trim();
-
-const normalizeCategoryName = (value) =>
-  (value ?? "").toString().trim().toLowerCase();
-
-const findCategoryById = (categories, id) => {
-  const normalized = normalizeCategoryId(id);
-  if (!normalized) return null;
-  return (
-    categories.find(
-      (category) => normalizeCategoryId(category.id) === normalized
-    ) || null
-  );
-};
-
-const findCategoryByName = (categories, name) => {
-  const normalized = normalizeCategoryName(name);
-  if (!normalized) return null;
-  return (
-    categories.find(
-      (category) => normalizeCategoryName(category.name) === normalized
-    ) || null
-  );
-};
-
-const generateCategoryId = (categories) => {
-  const numericIds = categories
-    .map((category) => Number(category.id))
-    .filter((value) => Number.isFinite(value));
-
-  if (numericIds.length === categories.length && numericIds.length > 0) {
-    const next = Math.max(...numericIds) + 1;
-    return String(next);
-  }
-
-  return Date.now().toString();
-};
-
-const getCategoryRows = async () => {
-  const sheets = getSheetsClient();
-  const response = await sheets.spreadsheets.values
-    .get({
-      spreadsheetId: SHEET_ID,
-      range: CATEGORY_SHEET_RANGE,
-    })
-    .catch((error) => {
-      if (error.code === 400 || error.code === 404) {
-        return { data: { values: [] } };
-      }
-      throw error;
-    });
-
-  const rawValues = response.data.values || [];
-  if (rawValues.length === 0) {
-    await initializeCategorySheet(sheets);
-    return [{ ...DEFAULT_CATEGORY }];
-  }
-
-  const categories = normalizeRows(rawValues).map((category) => ({
-    ...category,
-    id: normalizeCategoryId(category.id),
-  }));
-  const hasDefault = categories.some(
-    (row) =>
-      normalizeCategoryId(row.id) === normalizeCategoryId(DEFAULT_CATEGORY.id)
-  );
-
-  if (!hasDefault) {
-    await appendRow(
-      sheets,
-      CATEGORY_SHEET_RANGE,
-      CATEGORY_COLUMNS,
-      DEFAULT_CATEGORY
-    );
-    categories.push({ ...DEFAULT_CATEGORY });
-  }
-
-  return categories;
-};
-
-const getBudget = async () => {
-  const sheets = getSheetsClient();
-  const response = await sheets.spreadsheets.values
-    .get({
-      spreadsheetId: SHEET_ID,
-      range: BUDGET_SHEET_RANGE,
-    })
-    .catch((error) => {
-      if (error.code === 400 || error.code === 404) {
-        return { data: { values: [] } };
-      }
-      throw error;
-    });
-
-  const rawValues = response.data.values || [];
-  if (rawValues.length === 0) {
-    await initializeBudgetSheet(sheets);
-    return { ...DEFAULT_BUDGET };
-  }
-
-  const budgets = normalizeRows(rawValues);
-  if (budgets.length === 0) {
-    await appendRow(sheets, BUDGET_SHEET_RANGE, BUDGET_COLUMNS, DEFAULT_BUDGET);
-    return { ...DEFAULT_BUDGET };
-  }
-
-  return budgets[0];
-};
-
 const generateToken = (payload) =>
   jwt.sign(payload, JWT_SECRET, { expiresIn: JWT_EXPIRES_IN });
 
@@ -419,362 +269,154 @@ app.post("/auth/login", (req, res) => {
 const listTransactionsHandler = async (req, res) => {
   try {
     const sheets = getSheetsClient();
-    const response = await sheets.spreadsheets.values
-      .get({
-        spreadsheetId: SHEET_ID,
-        range: TRANSACTION_SHEET_RANGE,
-      })
-      .catch((error) => {
-        if (error.code === 400 || error.code === 404) {
-          return { data: { values: [] } };
-        }
-        throw error;
-      });
+    // const response = await sheets.spreadsheets.values
+    //   .get({
+    //     spreadsheetId: SHEET_ID,
+    //     range: TRANSACTION_SHEET_RANGE,
+    //   })
+    //   .catch((error) => {
+    //     if (error.code === 400 || error.code === 404) {
+    //       return { data: { values: [], errors: error } };
+    //     }
+    //     throw error;
+    //   });
 
-    const transactions = normalizeRows(response.data.values);
-    const categories = await getCategoryRows();
-    const categoryMap = categories.reduce((acc, category) => {
-      const id = normalizeCategoryId(category.id);
-      if (id) {
-        acc[id] = category;
-      }
-      return acc;
-    }, {});
+    // console.log(response);
 
-    const data = transactions.map((transaction) => {
-      const rawCategoryId =
-        normalizeCategoryId(transaction.category_id) ||
-        normalizeCategoryId(transaction.category);
-      const category =
-        categoryMap[rawCategoryId] ||
-        findCategoryByName(categories, transaction.category) ||
-        DEFAULT_CATEGORY;
+    // const transactions = normalizeRows(response.data.values);
 
-      return {
-        ...transaction,
-        category_id: category.id,
-        category_name: category.name,
-        category_color_hex: category.color_hex,
-      };
+    // const data = transactions.map((transaction) => {
+    //   return {
+    //     ...transaction
+    //   };
+    // });
+
+    // 先取得試算表的 metadata
+    const meta = await sheets.spreadsheets.get({
+      spreadsheetId: SHEET_ID
     });
 
-    res.json({ data });
+    // 抓出所有工作表名稱
+    let results = [];
+    const sheetNames = meta.data.sheets.map((s) => s.properties.title);
+    console.log("所有分頁：", sheetNames);
+
+    // 逐一讀取每個分頁
+    for (const name of sheetNames) {
+      const response = await sheets.spreadsheets.values.get({
+        spreadsheetId: SHEET_ID,
+        range: `${name}!A:Z`, // 假設讀取 A 到 Z 欄
+      });
+
+      // const transactions = normalizeRows(response.data.values);
+
+      // results.push(transactions.map((transaction) => {
+      //   return {
+      //     ...transaction
+      //   };
+      // }));
+
+      const rows = response.data.values || [];
+      if (rows.length < 2) continue;
+
+      const header = rows[0];
+      let timeIndex = header.findIndex(h =>
+        h && h.replace(/\s/g, "").toLowerCase().includes("日期") ||
+        h && h.replace(/\s/g, "").toLowerCase().includes("時間") ||
+        h && h.toLowerCase().includes("date")
+      );
+
+      let nameIndex = header.findIndex(h =>
+        h && h.replace(/\s/g, "").toLowerCase().includes("案件")
+      );
+
+      for (let i = 1; i < rows.length; i++) {
+        const row = rows[i];
+        if (row.some(cell => cell)) {
+          let timeVal = timeIndex !== -1 ? row[timeIndex] : "未填日期";
+          let caseVal = nameIndex !== -1 ? row[nameIndex] : "";
+          const content = row.filter((_, idx) => idx !== timeIndex && idx !== nameIndex);
+          results.push({ sheet: name, time: timeVal, caseName: caseVal, content: content });
+        }
+      }
+
+    }
+
+    results.sort((a, b) => {
+      const da = isNaN(Date.parse(a.time)) ? new Date(0) : new Date(a.time);
+      const db = isNaN(Date.parse(b.time)) ? new Date(0) : new Date(b.time);
+      return db - da;
+    });
+
+    res.json({results});
   } catch (error) {
+    console.log(res);
     console.error("Failed to fetch transaction data:", error);
-    res.status(500).json({ message: "無法讀取記帳資料", error: error.message });
+    res.status(500).json({ message: "無法讀取專案資料", error: error.message });
   }
 };
 
 app.get("/api/transactions", listTransactionsHandler);
-// 向後相容既有的 /api/products route
-app.get("/api/products", listTransactionsHandler);
-
-const createTransactionHandler = async (req, res) => {
-  try {
-    if (!req.body || typeof req.body !== "object") {
-      return res.status(400).json({ message: "請提供記帳資料" });
-    }
-
-    const missing = REQUIRED_TRANSACTION_COLUMNS.filter(
-      (key) => !req.body[key]
-    );
-    if (missing.length > 0) {
-      return res
-        .status(400)
-        .json({ message: `缺少必填欄位: ${missing.join(", ")}` });
-    }
-
-    const categories = await getCategoryRows();
-    const requestedCategoryId = normalizeCategoryId(req.body.category_id);
-    const requestedCategoryName = (req.body.category || "").trim();
-
-    const resolvedCategory = findCategoryById(
-      categories,
-      requestedCategoryId
-    ) ||
-      findCategoryByName(categories, requestedCategoryName) ||
-      findCategoryById(categories, DEFAULT_CATEGORY.id) || {
-        ...DEFAULT_CATEGORY,
-      };
-
-    const payload = {
-      ...req.body,
-      category_id: resolvedCategory.id,
-    };
-    delete payload.category;
-
-    const sheets = getSheetsClient();
-    await appendRow(
-      sheets,
-      TRANSACTION_SHEET_RANGE,
-      TRANSACTION_COLUMNS,
-      payload
-    );
-    res.status(201).json({
-      message: "記帳資料新增成功",
-      data: {
-        ...payload,
-        category_name: resolvedCategory.name,
-        category_color_hex: resolvedCategory.color_hex,
-      },
-    });
-  } catch (error) {
-    console.error("Failed to append transaction data:", error);
-    res.status(500).json({ message: "無法新增記帳資料", error: error.message });
-  }
-};
-
-app.post("/api/transactions", requireAuth, createTransactionHandler);
-// 向後相容既有的 /api/products route
-app.post("/api/products", requireAuth, createTransactionHandler);
 
 // PUT /api/transactions/:id - 更新記帳資料
-app.put("/api/transactions/:id", requireAuth, async (req, res) => {
+app.get("/api/transactions/:keyword", async (req, res) => {
   try {
-    const { id } = req.params;
-    if (!req.body || typeof req.body !== "object") {
-      return res.status(400).json({ message: "請提供記帳資料" });
-    }
-
-    const found = await findRowById(TRANSACTION_SHEET_RANGE, "id", id);
-    if (!found) {
-      return res.status(404).json({ message: "找不到該筆記帳資料" });
-    }
-
-    const categories = await getCategoryRows();
-    const requestedCategoryId = normalizeCategoryId(req.body.category_id);
-    const requestedCategoryName = (req.body.category || "").trim();
-
-    const resolvedCategory = findCategoryById(
-      categories,
-      requestedCategoryId
-    ) ||
-      findCategoryByName(categories, requestedCategoryName) ||
-      findCategoryById(categories, found.rowData.category_id) ||
-      findCategoryById(categories, DEFAULT_CATEGORY.id) || {
-        ...DEFAULT_CATEGORY,
-      };
-
-    const payload = {
-      ...found.rowData,
-      ...req.body,
-      id, // 確保 id 不被覆蓋
-      category_id: resolvedCategory.id,
-    };
-    delete payload.category;
-
-    await updateRow(
-      "transactions",
-      found.rowIndex,
-      TRANSACTION_COLUMNS,
-      payload
-    );
-
-    res.json({
-      message: "記帳資料更新成功",
-      data: {
-        ...payload,
-        category_name: resolvedCategory.name,
-        category_color_hex: resolvedCategory.color_hex,
-      },
-    });
-  } catch (error) {
-    console.error("Failed to update transaction:", error);
-    res.status(500).json({ message: "無法更新記帳資料", error: error.message });
-  }
-});
-
-// DELETE /api/transactions/:id - 刪除記帳資料
-app.delete("/api/transactions/:id", requireAuth, async (req, res) => {
-  try {
-    const { id } = req.params;
-
-    const found = await findRowById(TRANSACTION_SHEET_RANGE, "id", id);
-    if (!found) {
-      return res.status(404).json({ message: "找不到該筆記帳資料" });
-    }
-
-    await deleteRow("transactions", found.rowIndex);
-
-    res.json({ message: "記帳資料刪除成功", data: found.rowData });
-  } catch (error) {
-    console.error("Failed to delete transaction:", error);
-    res.status(500).json({ message: "無法刪除記帳資料", error: error.message });
-  }
-});
-
-app.get("/api/categories", async (req, res) => {
-  try {
-    const categories = await getCategoryRows();
-    res.json({ data: categories });
-  } catch (error) {
-    console.error("Failed to fetch categories:", error);
-    res.status(500).json({ message: "無法讀取類別資料", error: error.message });
-  }
-});
-
-app.post("/api/categories", requireAuth, async (req, res) => {
-  try {
-    if (!req.body || typeof req.body !== "object") {
-      return res.status(400).json({ message: "請提供類別資料" });
-    }
-
-    const name = (req.body.name || "").trim();
-    const colorHex =
-      (req.body.color_hex || "").trim() || DEFAULT_CATEGORY.color_hex;
-
-    if (!name) {
-      return res.status(400).json({ message: "類別名稱不得為空" });
-    }
-
-    if (!HEX_COLOR_REGEX.test(colorHex)) {
-      return res.status(400).json({ message: "色碼格式須為 #RRGGBB" });
-    }
-
-    const categories = await getCategoryRows();
-    const exists = categories.some(
-      (category) =>
-        (category.name || "").trim().toLowerCase() === name.toLowerCase()
-    );
-
-    if (exists) {
-      return res.status(409).json({ message: "類別名稱已存在" });
-    }
-
-    const payload = {
-      id: generateCategoryId(categories),
-      name,
-      color_hex: colorHex.toUpperCase(),
-    };
+    const { keyword } = req.params;
 
     const sheets = getSheetsClient();
-    await appendRow(sheets, CATEGORY_SHEET_RANGE, CATEGORY_COLUMNS, payload);
 
-    res.status(201).json({ message: "類別新增成功", data: payload });
+    // 先取得試算表的 metadata
+    const meta = await sheets.spreadsheets.get({
+      spreadsheetId: SHEET_ID
+    });
+
+    // 抓出所有工作表名稱
+    let results = [];
+    const sheetNames = meta.data.sheets.map((s) => s.properties.title);
+    console.log("所有分頁：", sheetNames);
+
+    // 逐一讀取每個分頁
+    for (const name of sheetNames) {
+      const response = await sheets.spreadsheets.values.get({
+        spreadsheetId: SHEET_ID,
+        range: `${name}!A:Z`, // 假設讀取 A 到 Z 欄
+      });
+
+      const rows = response.data.values || [];
+      if (rows.length < 2) continue;
+
+      const header = rows[0];
+      let timeIndex = header.findIndex(h =>
+        h && h.replace(/\s/g, "").toLowerCase().includes("日期") ||
+        h && h.replace(/\s/g, "").toLowerCase().includes("時間") ||
+        h && h.toLowerCase().includes("date")
+      );
+
+      let nameIndex = header.findIndex(h =>
+        h && h.replace(/\s/g, "").toLowerCase().includes("案件")
+      );
+
+      for (let i = 1; i < rows.length; i++) {
+        const row = rows[i];
+        if (row.some(cell => cell && cell.includes(keyword))) {
+          let timeVal = timeIndex !== -1 ? row[timeIndex] : "未填日期";
+          let caseVal = nameIndex !== -1 ? row[nameIndex] : "";
+          const content = row.filter((_, idx) => idx !== timeIndex && idx !== nameIndex);
+          results.push({ sheet: name, time: timeVal, caseName: caseVal, content: content });
+        }
+      }
+    }
+
+    results.sort((a, b) => {
+      const da = isNaN(Date.parse(a.time)) ? new Date(0) : new Date(a.time);
+      const db = isNaN(Date.parse(b.time)) ? new Date(0) : new Date(b.time);
+      return db - da;
+    });
+
+    res.json({results});
   } catch (error) {
-    console.error("Failed to append category:", error);
-    res.status(500).json({ message: "無法新增類別", error: error.message });
-  }
-});
-
-// PUT /api/categories/:id - 更新類別
-app.put("/api/categories/:id", requireAuth, async (req, res) => {
-  try {
-    const { id } = req.params;
-    if (!req.body || typeof req.body !== "object") {
-      return res.status(400).json({ message: "請提供類別資料" });
-    }
-
-    // 不允許修改預設類別的 id
-    if (normalizeCategoryId(id) === normalizeCategoryId(DEFAULT_CATEGORY.id)) {
-      // 允許修改名稱和顏色，但不能刪除
-    }
-
-    const found = await findRowById(CATEGORY_SHEET_RANGE, "id", id);
-    if (!found) {
-      return res.status(404).json({ message: "找不到該類別" });
-    }
-
-    const name = (req.body.name ?? found.rowData.name ?? "").trim();
-    const colorHex =
-      (req.body.color_hex ?? found.rowData.color_hex ?? "").trim() ||
-      DEFAULT_CATEGORY.color_hex;
-
-    if (!name) {
-      return res.status(400).json({ message: "類別名稱不得為空" });
-    }
-
-    if (!HEX_COLOR_REGEX.test(colorHex)) {
-      return res.status(400).json({ message: "色碼格式須為 #RRGGBB" });
-    }
-
-    // 檢查名稱是否與其他類別重複
-    const categories = await getCategoryRows();
-    const duplicate = categories.some(
-      (category) =>
-        normalizeCategoryId(category.id) !== normalizeCategoryId(id) &&
-        (category.name || "").trim().toLowerCase() === name.toLowerCase()
-    );
-
-    if (duplicate) {
-      return res.status(409).json({ message: "類別名稱已存在" });
-    }
-
-    const payload = {
-      id,
-      name,
-      color_hex: colorHex.toUpperCase(),
-    };
-
-    await updateRow("categories", found.rowIndex, CATEGORY_COLUMNS, payload);
-
-    res.json({ message: "類別更新成功", data: payload });
-  } catch (error) {
-    console.error("Failed to update category:", error);
-    res.status(500).json({ message: "無法更新類別", error: error.message });
-  }
-});
-
-// DELETE /api/categories/:id - 刪除類別
-app.delete("/api/categories/:id", requireAuth, async (req, res) => {
-  try {
-    const { id } = req.params;
-
-    // 不允許刪除預設類別
-    if (normalizeCategoryId(id) === normalizeCategoryId(DEFAULT_CATEGORY.id)) {
-      return res.status(400).json({ message: "無法刪除預設類別「未分類」" });
-    }
-
-    const found = await findRowById(CATEGORY_SHEET_RANGE, "id", id);
-    if (!found) {
-      return res.status(404).json({ message: "找不到該類別" });
-    }
-
-    await deleteRow("categories", found.rowIndex);
-
-    res.json({ message: "類別刪除成功", data: found.rowData });
-  } catch (error) {
-    console.error("Failed to delete category:", error);
-    res.status(500).json({ message: "無法刪除類別", error: error.message });
-  }
-});
-
-app.get("/api/budget", async (req, res) => {
-  try {
-    const budget = await getBudget();
-    res.json({ data: budget });
-  } catch (error) {
-    console.error("Failed to fetch budget:", error);
-    res.status(500).json({ message: "無法讀取預算", error: error.message });
-  }
-});
-
-app.put("/api/budget", requireAuth, async (req, res) => {
-  try {
-    if (!req.body || typeof req.body.amount === "undefined") {
-      return res.status(400).json({ message: "請提供預算金額" });
-    }
-
-    const amount = Math.max(0, Number(req.body.amount));
-    const budget = await getBudget();
-    const found = await findRowById(BUDGET_SHEET_RANGE, "id", budget.id);
-
-    if (!found) {
-      // Should not happen if getBudget works correctly, but safe fallback
-      return res.status(500).json({ message: "找不到預算設定" });
-    }
-
-    const payload = {
-      ...budget,
-      amount,
-    };
-
-    await updateRow("budgets", found.rowIndex, BUDGET_COLUMNS, payload);
-
-    res.json({ message: "預算更新成功", data: payload });
-  } catch (error) {
-    console.error("Failed to update budget:", error);
-    res.status(500).json({ message: "無法更新預算", error: error.message });
+    console.error("Failed to update transaction:", error);
+    res.status(500).json({ message: "無法查詢資料", error: error.message });
   }
 });
 
